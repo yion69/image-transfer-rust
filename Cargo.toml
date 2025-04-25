@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.98"
 axum = "0.8.3"
+base64 = "0.22.1"
 bytes = "1.10.1"
 chrono = "0.4.40"
 encoding_rs = "0.8.35"
