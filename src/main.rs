@@ -7,18 +7,14 @@ use std::{error::Error, path::PathBuf};
 use axum::{ routing::{get, post}, Json, Router };
 use tokio::{io::AsyncWriteExt, net::TcpListener};
 
+//Structs
 #[derive(Deserialize)]
-struct ImageUplaod {
+struct ImageUpload {
     image_bytes: Vec<u8>,
     image_type: String,
 }
 
-async fn handle_get() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "server_running": "We Ball"
-    }))
-}
-
+//Functions
 async fn check_folder_and_create(path:&PathBuf, ext:&str) -> Result<(), (StatusCode, String)> {
 
     let new_path = &path.join(&ext.to_uppercase());
@@ -36,7 +32,7 @@ async fn check_folder_and_create(path:&PathBuf, ext:&str) -> Result<(), (StatusC
     Ok(())
 }
 
-async fn file_create_and_write(payload: &ImageUplaod, folder_path: &PathBuf) -> Result<(), (StatusCode, String)> {
+async fn file_create_and_write(payload: &ImageUpload, folder_path: &PathBuf) -> Result<(), (StatusCode, String)> {
     
     let mut file = tokio::fs::File::create(folder_path)
         .await
@@ -60,7 +56,14 @@ async fn file_create_and_write(payload: &ImageUplaod, folder_path: &PathBuf) -> 
     Ok(())
 }
 
-async fn handle_upload(Json(payload): Json<ImageUplaod>) -> Result<(), (StatusCode, String)> {
+//Handlers
+async fn handle_get() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "server_running": "We Ball"
+    }))
+}
+
+async fn handle_upload(Json(payload): Json<ImageUpload>) -> Result<(), (StatusCode, String)> {
     
     println!(
         "image type => {} {} ",
@@ -94,22 +97,29 @@ async fn handle_upload(Json(payload): Json<ImageUplaod>) -> Result<(), (StatusCo
     Ok(())
 }
 
-async fn handle_fetch() -> Result<Json<serde_json::Value>, String> {
+async fn handle_fetch() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+
     let mut image_array: Vec<(String, String, Vec<u8>)> = vec![];
     let folder_path = PathBuf::from("transferred_images");
 
     if !folder_path.exists() {
-        return Err("Folder does not exist".to_string());
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error {} folder does not exist | Errorcode: 404", &folder_path.to_string_lossy())
+        ))
     };
 
     let mut entries = tokio::fs::read_dir(&folder_path)
-        .await.map_err(|e| {
-            format!("Failed to read the transferred folder for files or folder : {}", e)
-        })?;
+        .await.map_err(|e| {(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to read folders inside main folder | Errorcode: {}", e)
+        )})?;
 
-    while let Some(entry) = entries.next_entry().await.map_err(|e| {
-        format!("Failed to read next folder or file {}", e)
-    })? {
+    while let Some(entry) = entries.next_entry().await.map_err(|e| {(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Failed to read files inside sub folder | Errorcode: {}", e)
+    )})? {
+
         let path = entry.path();
         if entry.metadata().await.unwrap().is_dir() {
             println!("📁 Folder: {:#?}", path);
@@ -122,9 +132,8 @@ async fn handle_fetch() -> Result<Json<serde_json::Value>, String> {
 
                 if sub_path.is_file() {
                     println!("       🖼️ File: {:#?}", sub_path);
-                    println!("              File Name: {:#?}", sub_path.file_name());
-                    println!(
-                        "              File Type: {:#?}",
+                    println!("              File Name: {:?}", sub_path.file_name());
+                    println!("              File Type: {:?}",
                         sub_path.extension().map(|ext| ext.to_string_lossy())
                     );
 
@@ -133,7 +142,13 @@ async fn handle_fetch() -> Result<Json<serde_json::Value>, String> {
                     {
                         let name = file_name.to_string_lossy().to_string();
                         let extension = exten.to_string_lossy().to_string();
-                        let bytes = tokio::fs::read(&sub_path).await.unwrap();
+                        let bytes = match tokio::fs::read(&sub_path).await {
+                            Ok(bytes) => bytes,
+                            Err(e) => return Err((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Error while reading image bytes | Errorcode: {}", e)    
+                            ))
+                        };
 
                         image_array.push((
                             name,
@@ -153,6 +168,7 @@ async fn handle_fetch() -> Result<Json<serde_json::Value>, String> {
     })))
 }
 
+//Main
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let socket_address = "127.0.0.1:3000";
@@ -203,7 +219,7 @@ mod tests {
  
         let temp_dir = tempdir().unwrap();
         let temp_file = temp_dir.path().join("JPG").to_owned();
-        let test_data = ImageUplaod {
+        let test_data = ImageUpload {
             image_type: "image/jpeg".to_string(),
             image_bytes: vec![0xFF, 0xD8, 0xFF]
         };
