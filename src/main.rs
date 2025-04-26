@@ -1,11 +1,11 @@
-use axum::{ routing::{get, post}, Json, Router };
-use base64::Engine;
 use chrono::Utc;
-use http::{Method, StatusCode};
+use base64::Engine;
 use serde::Deserialize;
-use std::{error::Error, path::PathBuf};
-use tokio::{io::AsyncWriteExt, net::TcpListener};
+use http::{Method, StatusCode};
 use tower_http::cors::{Any, CorsLayer};
+use std::{error::Error, path::PathBuf};
+use axum::{ routing::{get, post}, Json, Router };
+use tokio::{io::AsyncWriteExt, net::TcpListener};
 
 #[derive(Deserialize)]
 struct ImageUplaod {
@@ -19,12 +19,55 @@ async fn handle_get() -> Json<serde_json::Value> {
     }))
 }
 
-async fn handle_upload(Json(payload): Json<ImageUplaod>) -> Result<(), String> {
+async fn check_folder_and_create(path:&PathBuf, ext:&str) -> Result<(), (StatusCode, String)> {
+
+    let new_path = &path.join(&ext.to_uppercase());
+    if !new_path.exists() {
+        tokio::fs::create_dir_all(&new_path)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error while creating {} folder | Errorcode: {}", &ext.to_uppercase(), e)
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn file_create_and_write(payload: &ImageUplaod, folder_path: &PathBuf) -> Result<(), (StatusCode, String)> {
+    
+    let mut file = tokio::fs::File::create(folder_path)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error while writing into file at {} | Errorcode: {}", &folder_path.to_string_lossy(), e)
+            )
+    })?;
+
+    file.write_all(&payload.image_bytes).await.map_err(|e| {
+        
+         eprintln!("Error while writing image bytes into file | Errorcode: {}", e);
+        
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to write into file | Errorcode {}", e)
+        )
+    })?;
+
+    Ok(())
+}
+
+async fn handle_upload(Json(payload): Json<ImageUplaod>) -> Result<(), (StatusCode, String)> {
+    
     println!(
         "image type => {} {} ",
         payload.image_type,
         payload.image_bytes.len()
     );
+
     let extension = match payload.image_type.as_str() {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -34,71 +77,16 @@ async fn handle_upload(Json(payload): Json<ImageUplaod>) -> Result<(), String> {
     };
 
     let date_time = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-    let mut folder_path = PathBuf::from("transferred_images");
+    let folder_path = PathBuf::from("transferred_images");
 
-    if !folder_path.exists() {
-        tokio::fs::create_dir_all(&folder_path).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-            format!("Failed to create directory: {}", e)
-        })?;
-    }
-
+    check_folder_and_create(&folder_path, &extension).await?;
+    
     let file_name = format!("{}.{}", date_time, extension);
-    match extension {
-        "jpg" => {
-            if !folder_path.join("JPG").exists() {
-                tokio::fs::create_dir_all(&folder_path.join("JPG"))
-                    .await
-                    .unwrap();
-            }
-            folder_path.push("JPG")
-        }
-        "png" => {
-            if !folder_path.join("PNG").exists() {
-                tokio::fs::create_dir_all(&folder_path.join("PNG"))
-                    .await
-                    .unwrap();
-            }
-            folder_path.push("PNG")
-        }
-        "gif" => {
-            if !folder_path.join("GIF").exists() {
-                tokio::fs::create_dir_all(&folder_path.join("GIF"))
-                    .await
-                    .unwrap();
-            }
-            folder_path.push("GIF")
-        }
-        "webp" => {
-            if !folder_path.join("WEBP").exists() {
-                tokio::fs::create_dir_all(&folder_path.join("WEBP"))
-                    .await
-                    .unwrap();
-            }
-            folder_path.push("WEBP")
-        }
-        _ => folder_path.push("Undefined"),
-    }
+    let full_path:PathBuf = folder_path.join(extension.to_uppercase()).join(file_name);
 
-    folder_path.push(file_name);
-
-    println!("{}", folder_path.display());
-
-    let mut file = tokio::fs::File::create(&folder_path)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-            format!("Failed to write file: {}", e)
-        })?;
-
-    file.write(&payload.image_bytes).await.unwrap();
-
+    file_create_and_write(&payload, &full_path).await?;
     println!(
-        "Saved {:?} ({} bytes)",
+        "Saved to 📁 Folder: {:#?} ({} bytes)",
         &folder_path,
         payload.image_bytes.len()
     );
@@ -185,4 +173,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_check_folder_and_create() {
+        
+        let temp_dir = tempdir().unwrap();
+        let test_path = temp_dir.path().to_owned();
+
+        println!("Temp dir: {:?}", test_path);
+
+        let result = check_folder_and_create(&test_path, "JPG").await;
+        assert!(result.is_ok(),  "Function returned error: {:?}", result);
+
+        let jpg_path = test_path.join("JPG");
+        println!("Checking path: {:?}", jpg_path); 
+        println!("Directory exists: {}", jpg_path.exists());
+
+        assert!(jpg_path.exists());
+    }   
+
+    #[tokio::test]
+    async fn test_file_create_and_write() {
+ 
+        let temp_dir = tempdir().unwrap();
+        let temp_file = temp_dir.path().join("JPG").to_owned();
+        let test_data = ImageUplaod {
+            image_type: "image/jpeg".to_string(),
+            image_bytes: vec![0xFF, 0xD8, 0xFF]
+        };
+
+        let result = file_create_and_write(&test_data, &temp_file).await;
+
+        assert!(result.is_ok());
+        assert!(std::fs::read(&temp_file).is_ok());
+        assert_eq!(std::fs::read(&temp_file).unwrap(), test_data.image_bytes);
+    }
 }
